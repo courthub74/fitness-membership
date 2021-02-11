@@ -26,7 +26,7 @@ def join(request):
 @login_required
 def checkout(request):
 
-    coupons = {'halloween':31, 'welcome':10, 'pam':60}
+    coupons = {'halloween':31, 'welcome':10, 'pam':95}
 
     if request.method == 'POST': #Carte De Credit comes thru as a post request
         return redirect('home')
@@ -44,7 +44,7 @@ def checkout(request):
                 og_dollar = 100
                 final_dollar = 100
 
-        if request.method == 'GET' and 'plan' in request.GET:
+        if request.method == 'GET' and 'coupon' in request.GET:
             if request.GET['coupon'].lower() in coupons:
                 coupon = request.GET['coupon'].lower()
                 percentage = coupons[coupon]
