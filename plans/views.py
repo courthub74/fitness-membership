@@ -2,12 +2,27 @@ from django.shortcuts import render, get_object_or_404, redirect
 from .forms import CustomSignupForm
 from django.urls import reverse_lazy
 from django.views import generic
-from .models import FitnessPlan
+from .models import FitnessPlan, Customer 
 from django.contrib.auth import authenticate, login
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, user_passes_test
 import stripe
+from django.http import HttpResponse
 
 stripe.api_key = 'sk_test_51IJQ7sFHCmVor85bcZbrjyqKKPEYU5mIYJKRKMpfcJw348grAdb9YBq2jIh4G82uXjg4gI6MOLPTXZXDv9pBnYO600Jnzva9n1'
+
+
+@user_passes_test(lambda u: u.is_superuser)
+def updateaccounts(request):
+    customers = Customer.objects.all()
+    for customer in customers:
+        subscription = stripe.Subscription.retrieve(customer.stripe_subscription_id)
+        if subscription.status != 'active':
+            customer.membership = False
+        else:
+            customer.membership = True
+        customer.cancel_at_period_end = subscription.cancel_at_period_end
+        customer.save()
+        return HttpResponse('completed')
 
 def home(request):
     plans = FitnessPlan.objects
@@ -16,6 +31,13 @@ def home(request):
 def plan(request,pk):
     plan = get_object_or_404(FitnessPlan, pk=pk)
     if plan.premium :
+        #Check if user is logged in and if so that they have a membership
+        if request.user.is_authenticated:
+            try:
+                if request.user.customer.membership:
+                    return render(request, 'plans/plan.html', {'plan':plan})
+            except Customer.DoesNotExist:
+                return redirect('join')
         return redirect('join')
     else:
         return render(request, 'plans/plan.html', {'plan':plan})
@@ -26,7 +48,41 @@ def join(request):
 @login_required
 def checkout(request):
 
+    try:
+        if request.user.customer.membership:
+            return redirect('settings')
+    except Customer.DoesNotExist:
+        pass
+
     coupons = {'halloween':31, 'welcome':10, 'pam':95}
+
+    if request.method == 'POST':
+        stripe_customer = stripe.Customer.create(email=request.user.email, source=request.POST['stripeToken'])
+        plan = 'price_1IJQSMFHCmVor85bwOOS1oWY'
+        if request.POST['plan'] == 'yearly':
+            plan = 'price_1IJQTgFHCmVor85bSt6Qd845'
+        if request.POST['coupon'] in coupons:
+            percentage = coupons[request.POST['coupon'].lower()]
+            try:
+                coupon = stripe.Coupon.create(duration='once', id=request.POST['coupon'].lower(),
+                    percent_off = percentage)
+            except:
+                pass
+            subscription = stripe.Subscription.create(customer=stripe_customer.id,
+            items=[{'plan':plan}], coupon=request.POST['coupon'].lower())
+        else:
+            subscription = stripe.Subscription.create (customer=stripe_customer.id, items=[{'plan':plan}])
+        
+        customer = Customer()
+        customer.user = request.user
+        customer.stripeid = stripe_customer.id
+        customer.membership = True
+        customer.cancel_at_period_end = False
+        customer.stripe_subscription_id = subscription.id
+        customer.save()
+
+        return redirect('home')
+            
 
     if request.method == 'POST': #Carte De Credit comes thru as a post request
         return redirect('home')
@@ -53,12 +109,30 @@ def checkout(request):
                 coupon_dollar = str(coupon_price)[:-2] + '.' + str(coupon_price)[-2:]
                 final_dollar = str(price)[:-2] + '.' + str(price)[-2:]
 
-
         return render(request, 'plans/checkout.html', {'plan': plan, 'coupon': coupon, 'price': price,
         'og_dollar': og_dollar, 'final_dollar': final_dollar})
 
 def settings(request):
-    return render(request, 'registration/settings.html')
+    membership = False
+    cancel_at_period_end = False
+    if request.method == 'POST':
+        subscription = stripe.Subscription.retrieve(request.user.customer.stripe_subscription_id)
+        subscription.cancel_at_period_end = True
+        request.user.customer.cancel_at_period_end = True 
+        #if subscription.cancel_at.... True then request.user.customer.cancel_at ... (set to 3 Months from now) NETFLIX
+        cancel_at_period_end = True
+        subscription.save()
+        request.user.customer.save()
+    else:
+        try:
+            if request.user.customer.membership:
+                membership = True
+            if request.user.customer.cancel_at_period_end:
+                cancel_at_period_end = True
+        except Customer.DoesNotExist:
+            membership = False
+    return render(request, 'registration/settings.html', {'membership':membership,
+        'cancel_at_period_end':cancel_at_period_end})
 
 class SignUp(generic.CreateView):
     form_class = CustomSignupForm
